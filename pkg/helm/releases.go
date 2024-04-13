@@ -5,38 +5,36 @@ import (
 	"strings"
 
 	"github.com/mogensen/helm-changelog/pkg/git"
-	"github.com/sirupsen/logrus"
+	"github.com/pterm/pterm"
 )
 
-func CreateHelmReleases(log *logrus.Logger, chartFile, chartDir string, g git.Git, commits []git.GitCommit) []*Release {
-
+func CreateHelmReleases(l *pterm.Logger, chartFile, chartDir string, commits []git.GitCommit) []*Release {
 	res := []*Release{}
 	currentRelease := ""
 	releaseCommits := []git.GitCommit{}
 
-	log.Infof(" - Found commits for chart: %d\n", len(commits))
+	l.Debug("commits", l.Args("count", len(commits)))
 
-	for _, l := range commits {
+	for _, c := range commits {
+		releaseCommits = append(releaseCommits, c)
 
-		releaseCommits = append(releaseCommits, l)
-
-		chartContent, err := g.GetFileContent(l.Commit, chartFile)
+		chartContent, err := git.GetFileContent(l, c.Commit, chartFile)
 		if err != nil {
-			log.Infof("Chart.yaml not found in: %s\n", l.Commit)
+			l.Warn("Chart.yaml not found", l.Args("path", c.Commit))
 			continue
 		}
 
 		chart, err := GetChart(strings.NewReader(chartContent))
 		if err != nil {
-			log.Warnf("Ignoring Chart.yaml file that cannot be parsed: %s", err)
+			l.Warn("Chart.yaml cannot be parsed", l.Args("err", err.Error()))
 			continue
 		}
 
 		if chart.Version != currentRelease {
-			log.Infof(" - Found version: %s\n", chart.Version)
+			l.Debug("Found new release", l.Args("version", chart.Version))
 
 			r := &Release{
-				ReleaseDate: l.Author.Date,
+				ReleaseDate: c.Author.Date,
 				Chart:       chart,
 				Commits:     releaseCommits,
 			}
@@ -48,11 +46,11 @@ func CreateHelmReleases(log *logrus.Logger, chartFile, chartDir string, g git.Gi
 
 	// Check if we have any unreleased commits
 	if len(releaseCommits) > 0 {
-		chartContent, err := g.GetFileContent("HEAD", chartFile)
+		chartContent, err := git.GetFileContent(l, "HEAD", chartFile)
 		if err == nil {
 			chart, err := GetChart(strings.NewReader(chartContent))
 			if err != nil {
-				log.Warnf("Ignoring Chart.yaml file that cannot be parsed: %s", err)
+				l.Warn("Chart.yaml cannot be parsed", l.Args("err", err.Error()))
 			} else {
 				chart.Version = "Next Release"
 				res = append(res, &Release{
@@ -64,12 +62,12 @@ func CreateHelmReleases(log *logrus.Logger, chartFile, chartDir string, g git.Gi
 	}
 
 	// Diff values files across versions
-	createValueDiffs(res, g, chartFile, chartDir)
+	createValueDiffs(l, res, chartFile, chartDir)
 
 	return res
 }
 
-func createValueDiffs(res []*Release, g git.Git, chartFile, chartDir string) {
+func createValueDiffs(l *pterm.Logger, res []*Release, chartFile, chartDir string) {
 
 	fullValuesFile := filepath.Join(filepath.Dir(chartFile), "values.yaml")
 	relativeValuesFile := filepath.Join(chartDir, "values.yaml")
@@ -78,9 +76,9 @@ func createValueDiffs(res []*Release, g git.Git, chartFile, chartDir string) {
 		diff := ""
 		if v > 0 {
 			lastRelease := res[v-1]
-			diff, _ = g.GetDiffBetweenCommits(lastRelease.Commits[len(lastRelease.Commits)-1].Commit, release.Commits[len(release.Commits)-1].Commit, relativeValuesFile)
+			diff, _ = git.GetDiffBetweenCommits(l, lastRelease.Commits[len(lastRelease.Commits)-1].Commit, release.Commits[len(release.Commits)-1].Commit, relativeValuesFile)
 		} else {
-			diff, _ = g.GetFileContent(release.Commits[0].Commit, fullValuesFile)
+			diff, _ = git.GetFileContent(l, release.Commits[0].Commit, fullValuesFile)
 		}
 		release.ValueDiff = diff
 	}

@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"io"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,85 +9,79 @@ import (
 	"github.com/mogensen/helm-changelog/pkg/git"
 	"github.com/mogensen/helm-changelog/pkg/helm"
 	"github.com/mogensen/helm-changelog/pkg/output"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+
+	"github.com/pterm/pterm"
 )
 
-var changelogFilename string
-var releaseTemplatePath string
+func Execute() {
+	cmd := cobra.Command{
+		Use:   "helm-changelog",
+		Short: "Create changelogs for Helm Charts, based on git history",
+	}
+	f := cmd.Flags()
 
-// rootCmd represents the base command when called without any subcommands
-var rootCmd = &cobra.Command{
-	Use:   "helm-changelog",
-	Short: "Create changelogs for Helm Charts, based on git history",
-	Run: func(cmd *cobra.Command, args []string) {
+	outputFilename := f.StringP("filename", "f", "Changelog.md", "Filename for changelog file to be generated")
+	debug := f.BoolP("debug", "d", false, "Run in debug mode")
 
-		log := logrus.StandardLogger()
+	releaseTemplatePath := f.StringP("release-template", "r", "", "Path to a Go template used for each release")
+
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		logger := pterm.DefaultLogger.WithTime(false)
+
+		if *debug {
+			logger.Level = pterm.LogLevelDebug
+			logger.ShowTime = true
+			logger.Formatter = pterm.LogFormatterJSON
+			logger.ShowCaller = true
+		}
+
+		logger.Info("Creating changelog")
 
 		currentDir, err := os.Getwd()
 		if err != nil {
-			log.Fatal(err)
+			return errors.New("failed to get current directory")
 		}
 
-		g := git.Git{Log: log}
-
-		gitBaseDir, err := g.FindGitRepositoryRoot()
+		gitBaseDir, err := git.FindGitRepositoryRoot(logger)
 		if err != nil {
-			log.Fatalf("Could not determine git root directory. helm-changelog depends largely on git history.")
+			return errors.New("Could not determine git root directory")
 		}
 
 		fileList, err := helm.FindCharts(currentDir)
 		if err != nil {
-			log.Fatal(err)
+			logger.Error("Could not find any charts",
+				logger.Args("dir", currentDir),
+				logger.Args("err", err))
+			return errors.New("Could not find any charts")
 		}
 
 		for _, chartFileFullPath := range fileList {
-			log.Infof("Handling: %s\n", chartFileFullPath)
+			logger.Info("Handling", logger.Args("file", chartFileFullPath))
 
 			fullChartDir := filepath.Dir(chartFileFullPath)
 			chartFile := strings.TrimPrefix(chartFileFullPath, gitBaseDir+"/")
 			relativeChartFile := strings.TrimPrefix(chartFileFullPath, currentDir+"/")
 			relativeChartDir := filepath.Dir(relativeChartFile)
 
-			allCommits, err := g.GetAllCommits(fullChartDir)
+			allCommits, err := git.GetAllCommits(logger, fullChartDir)
 			if err != nil {
-				log.Fatal(err)
+				logger.Error("Could not get all commits",
+					logger.Args("dir", fullChartDir), logger.Args("err", err))
+				return errors.New("Could not get all commits")
 			}
 
-			releases := helm.CreateHelmReleases(log, chartFile, relativeChartDir, g, allCommits)
+			releases := helm.CreateHelmReleases(logger, chartFile, relativeChartDir, allCommits)
 
-			changeLogFilePath := filepath.Join(fullChartDir, changelogFilename)
-			output.Markdown(log, changeLogFilePath, releaseTemplatePath, releases)
-		}
-	},
-}
-
-// Execute sets all flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
-func Execute() {
-	var v string
-
-	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		if err := setUpLogs(os.Stdout, v); err != nil {
-			return err
+			changeLogFilePath := filepath.Join(fullChartDir, *outputFilename)
+			err = output.Markdown(logger, changeLogFilePath, *releaseTemplatePath, releases)
+			if err != nil {
+				logger.Error("Could not create markdown",
+					logger.Args("file", changeLogFilePath), logger.Args("err", err))
+				return errors.New("Could not create markdown")
+			}
 		}
 		return nil
 	}
-
-	rootCmd.PersistentFlags().StringVarP(&changelogFilename, "filename", "f", "Changelog.md", "Filename for changelog")
-	rootCmd.PersistentFlags().StringVarP(&v, "verbosity", "v", logrus.WarnLevel.String(), "Log level (debug, info, warn, error, fatal, panic)")
-	rootCmd.PersistentFlags().StringVarP(&releaseTemplatePath, "release-template", "r", "", "Path to a Go template used for each release")
-
-	cobra.CheckErr(rootCmd.Execute())
-}
-
-// setUpLogs set the log output ans the log level
-func setUpLogs(out io.Writer, level string) error {
-	logrus.SetOutput(out)
-	lvl, err := logrus.ParseLevel(level)
-	if err != nil {
-		return err
-	}
-	logrus.SetLevel(lvl)
-	return nil
+	cobra.CheckErr(cmd.Execute())
 }

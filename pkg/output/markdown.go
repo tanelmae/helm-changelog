@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/mogensen/helm-changelog/pkg/helm"
+	"github.com/sirupsen/logrus"
 )
 
 // Markdown creates a markdown representation of the changelog at the changeLogFilePath path
